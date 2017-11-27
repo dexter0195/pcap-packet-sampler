@@ -12,6 +12,7 @@ struct capture {
     int curr_sample;
     int s;
     int n;
+    pcap_dumper_t *pdumper;
 };
 
 typedef struct capture cap_stat;
@@ -58,9 +59,12 @@ void my_packet_handler( u_char *args, const struct pcap_pkthdr *header, const u_
     cap_stat *sampler_info;
     sampler_info = (cap_stat *) args;
 
-    int curr = sampler_info->curr_sample;
     bool skip = ! (to_sample(sampler_info));
     if ( skip ) {
+        return;
+    }
+    else {
+        pcap_dump((u_char *)sampler_info->pdumper, header, packet);
         return;
     }
 
@@ -164,7 +168,7 @@ int main(int argc, char **argv) {
         printf("missing arguments");
         return 1;
     }
-    cap_stat info = { 0, 0, 0, 0, strtol(argv[2], NULL, 10) };
+    cap_stat info = { 0, 0, 0, 0, strtol(argv[2], NULL, 10), NULL };
 
     select_random(&info);
     info.stop = info.n;
@@ -175,14 +179,14 @@ int main(int argc, char **argv) {
     struct pcap_pkthdr packet_header;
     int packet_count_limit = 1;
     int timeout_limit = 10000; /* In milliseconds */
-    /* End the loop after this many packets are captured */
-    int total_packet_count = 200;
     u_char *my_arguments = (u_char*) &info;
 
 
     handle = pcap_open_offline(argv[1], error_buffer);
 
-    pcap_loop(handle, total_packet_count, my_packet_handler, my_arguments);
+    info.pdumper = pcap_dump_open(handle, "/tmp/pcap.pcap");
+
+    pcap_loop(handle, 0, my_packet_handler, my_arguments);
 
     pcap_close(handle);
 
