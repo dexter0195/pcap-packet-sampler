@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <time.h>
+#include <getopt.h>
+#include <string.h>
 
 struct capture {
     int start;
@@ -13,6 +15,8 @@ struct capture {
     int s;
     int n;
     pcap_dumper_t *pdumper;
+    int sample_n;
+    int truncate_b;
 };
 
 typedef struct capture cap_stat;
@@ -33,6 +37,10 @@ void next_window (cap_stat *stat){
 }
 
 bool to_sample ( cap_stat *sampler_info ) {
+
+    //se n == 1 allora disattiva il campionamento e salva tutti i pacchetti
+    if (sampler_info->n == 1) return true;
+
     //controlla se il pacchetto corrente deve essere campionato o meno
 
     if (sampler_info->curr_sample < sampler_info->start) {
@@ -68,110 +76,134 @@ void my_packet_handler( u_char *args, const struct pcap_pkthdr *header, const u_
         return;
     }
 
+    //TODO predisporre il troncamento del pacchetto
 
-    /* First, lets make sure we have an IP packet */
-    struct ether_header *eth_header;
-    eth_header = (struct ether_header *) packet;
-    if (ntohs(eth_header->ether_type) != ETHERTYPE_IP) {
-        printf("Not an IP packet. Skipping...\n\n");
-        return;
-    }
+}
 
-    /* The total packet length, including all headers
-       and the data payload is stored in
-       header->len and header->caplen. Caplen is
-       the amount actually available, and len is the
-       total packet length even if it is larger
-       than what we currently have captured. If the snapshot
-       length set with pcap_open_live() is too small, you may
-       not have the whole packet. */
-    printf("Total packet available: %d bytes\n", header->caplen);
-    printf("Expected packet size: %d bytes\n", header->len);
-
-    /* Pointers to start point of various headers */
-    const u_char *ip_header;
-    const u_char *tcp_header;
-    const u_char *payload;
-
-    /* Header lengths in bytes */
-    int ethernet_header_length = 14; /* Doesn't change */
-    int ip_header_length;
-    int tcp_header_length;
-    int payload_length;
-
-    /* Find start of IP header */
-    ip_header = packet + ethernet_header_length;
-    /* The second-half of the first byte in ip_header
-       contains the IP header length (IHL). */
-    ip_header_length = ((*ip_header) & 0x0F);
-    /* The IHL is number of 32-bit segments. Multiply
-       by four to get a byte count for pointer arithmetic */
-    ip_header_length = ip_header_length * 4;
-    printf("IP header length (IHL) in bytes: %d\n", ip_header_length);
-
-    /* Now that we know where the IP header is, we can 
-       inspect the IP header for a protocol number to 
-       make sure it is TCP before going any further. 
-       Protocol is always the 10th byte of the IP header */
-    u_char protocol = *(ip_header + 9);
-    if (protocol != IPPROTO_TCP) {
-        printf("Not a TCP packet. Skipping...\n\n");
-        return;
-    }
-
-    /* Add the ethernet and ip header length to the start of the packet
-       to find the beginning of the TCP header */
-    tcp_header = packet + ethernet_header_length + ip_header_length;
-    /* TCP header length is stored in the first half 
-       of the 12th byte in the TCP header. Because we only want
-       the value of the top half of the byte, we have to shift it
-       down to the bottom half otherwise it is using the most 
-       significant bits instead of the least significant bits */
-    tcp_header_length = ((*(tcp_header + 12)) & 0xF0) >> 4;
-    /* The TCP header length stored in those 4 bits represents
-       how many 32-bit words there are in the header, just like
-       the IP header length. We multiply by four again to get a
-       byte count. */
-    tcp_header_length = tcp_header_length * 4;
-    printf("TCP header length in bytes: %d\n", tcp_header_length);
-
-    /* Add up all the header sizes to find the payload offset */
-    int total_headers_size = ethernet_header_length+ip_header_length+tcp_header_length;
-    printf("Size of all headers combined: %d bytes\n", total_headers_size);
-    payload_length = header->caplen -
-                     (ethernet_header_length + ip_header_length + tcp_header_length);
-    printf("Payload size: %d bytes\n", payload_length);
-    printf("packet:%d \n", packet);
-    payload = packet + total_headers_size;
-    printf("Memory address where payload begins: %p\n\n", payload);
-
-    /* Print payload in ASCII */
-    /*
-    if (payload_length > 0) {
-        const u_char *temp_pointer = payload;
-        int byte_count = 0;
-        while (byte_count++ < payload_length) {
-            printf("%c", *temp_pointer);
-            temp_pointer++;
-        }
-        printf("\n");
-    }
-    */
-
-    return;
+void usage(char *argv1){
+    printf("usage: %s --infile <input_file.pcap> --outfile <output_file.pcap>\n\n"
+                   "options:\n"
+                   "-t\t--trunkate-pkts <bytes>\t\ttruncate packet size to (bytes) size\n"
+                   "-n\t--no-truncate-pkts\t\tdo not truncate packets\n"
+                   "-s\t--sample-n <N>\t\t\tsample 1 every N packets seen\n"
+                   "-N\t--no-sample\t\t\tdo not sample every N packets, take them all!\n"
+                   "-h\t--help\t\t\tshow this help\n"
+                   "\n" ,argv1);
 }
 
 int main(int argc, char **argv) {
 
 
-    if (argc < 3) {
-        printf("missing arguments");
-        return 1;
-    }
-    cap_stat info = { 0, 0, 0, 0, strtol(argv[2], NULL, 10), NULL };
+    int truncate_bytes = 0;
+    int sample_n = 1;
+    char in_filename[4096] = "";
+    char out_filename[4096] = "";
 
-    select_random(&info);
-    info.stop = info.n;
+
+/* Flag set by ‘--verbose’. */
+    static int verbose_flag;
+    static int no_truncate;
+    static int no_sample;
+
+    int c;
+
+    while (1) {
+        static struct option long_options[] =
+                {
+                        /* These options set a flag. */
+                        {"verbose", no_argument,       &verbose_flag, 1},
+                        /* These options don’t set a flag.
+                           We distinguish them by their indices. */
+                        {"truncate-pkts",     required_argument,       0,             't'},
+                        {"help",     no_argument,       0,             'h'},
+                        {"no-truncate-pkts",  no_argument,       &no_truncate,             'n'},
+                        {"sample-n",  required_argument, 0,             's'},
+                        {"no-sample",  no_argument, &no_sample,             'N'},
+                        {"infile",    required_argument, 0,             'i'},
+                        {"outfile",    required_argument, 0,             'o'},
+                        {0, 0,                         0,             0}
+                };
+        /* getopt_long stores the option index here. */
+        int option_index = 0;
+
+        c = getopt_long(argc, argv, "t:ns:Ni:o:h",
+                        long_options, &option_index);
+
+        /* Detect the end of the options. */
+        if (c == -1)
+            break;
+
+        switch (c) {
+            case 'h':
+                usage(argv[0]);
+                return 0;
+            case 0:
+                /* If this option set a flag, do nothing else now. */
+                if (long_options[option_index].flag != 0)
+                    break;
+//                printf("option %s", long_options[option_index].name);
+                if (optarg)
+//                    printf(" with arg %s", optarg);
+//                printf("\n");
+                break;
+
+            case 'i':
+                strncpy(in_filename,optarg,4096);
+//                printf("filename: %s\n", in_filename);
+                break;
+
+            case 'o':
+                strncpy(out_filename,optarg,4096);
+//                printf("filename: %s\n", out_filename);
+                break;
+
+            case 't':
+//                printf("truncate to option -d with value `%s'\n", optarg);
+                truncate_bytes = atoi(optarg);
+                break;
+
+            case 's':
+//                printf("sample every N option -f with value `%s'\n", optarg);
+                sample_n = atoi(optarg);
+                break;
+
+            case '?':
+                /* getopt_long already printed an error message. */
+                break;
+
+            default:
+                usage(argv[0]);
+                abort();
+        }
+    }
+
+
+    /* Instead of reporting ‘--verbose’
+       and ‘--brief’ as they are encountered,
+       we report the final status resulting from them. */
+    if (verbose_flag)
+        puts("verbose flag is set");
+
+//    /* Print any remaining command line arguments (not options). */
+//    if (optind < argc) {
+//        printf("non-option ARGV-elements: ");
+//        while (optind < argc)
+//            printf("%s ", argv[optind++]);
+//        putchar('\n');
+//    }
+
+    //files are mandatory!!
+    if ( strcmp("", in_filename) == 0 ) {
+        usage(argv[0]);
+        abort();
+    }
+    if ( strcmp("", out_filename) == 0 ) {
+        usage(argv[0]);
+        abort();
+    }
+
+
+
 
     char error_buffer[PCAP_ERRBUF_SIZE];
     pcap_t *handle;
@@ -179,13 +211,27 @@ int main(int argc, char **argv) {
     struct pcap_pkthdr packet_header;
     int packet_count_limit = 1;
     int timeout_limit = 10000; /* In milliseconds */
+
+
+    handle = pcap_open_offline(in_filename, error_buffer);
+
+/*
+    struct capture {
+        int start;
+        int stop;
+        int curr_sample;
+        int s;
+        int n;
+        pcap_dumper_t *pdumper;
+        int truncate_b;
+    };
+    */
+
+    cap_stat info = {0, sample_n, 0, 0, sample_n, NULL, truncate_bytes};
+    select_random(&info);
+
+    info.pdumper = pcap_dump_open(handle, out_filename);
     u_char *my_arguments = (u_char*) &info;
-
-
-    handle = pcap_open_offline(argv[1], error_buffer);
-
-    info.pdumper = pcap_dump_open(handle, "/tmp/pcap.pcap");
-
     pcap_loop(handle, 0, my_packet_handler, my_arguments);
 
     pcap_close(handle);
