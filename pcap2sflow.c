@@ -59,6 +59,7 @@ struct capture {
     pcap_dumper_t *pdumper;
     int truncate_b;
     bool dlt_raw;
+    bool use_blacklist;
     int sleeping_timeout;
 };
 struct blacklist_item {
@@ -77,7 +78,6 @@ void select_random (cap_stat *stat) {
     srand ( time(NULL) ) ;
     int x = rand();
     stat->s = stat->start + ( x % stat->n ) ;
-    return;
 }
 
 void next_window (cap_stat *stat){
@@ -129,7 +129,6 @@ void save_packet (cap_stat *s, const struct pcap_pkthdr *header, const u_char *p
         pcap_dump((u_char *)s->pdumper, header, packet);
     }
 
-    return;
 }
 /* Finds the payload of a TCP/IP packet */
 void my_packet_handler( u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
@@ -138,7 +137,7 @@ void my_packet_handler( u_char *args, const struct pcap_pkthdr *header, const u_
     sampler_info = (cap_stat *) args;
 
     if (sampler_info->sleeping_timeout-- == 0){
-        printf("simulating real traffic... sleeping\n");
+//        printf("simulating real traffic... sleeping\n");
         sampler_info->sleeping_timeout = DEFAULT_SLEEP_COUNTDOWN;
         sleep(2);
     }
@@ -153,14 +152,16 @@ void my_packet_handler( u_char *args, const struct pcap_pkthdr *header, const u_
         ip = (struct sniff_ip*)(packet + SIZE_ETHERNET);
     }
 
-    //check if the address is blacklisted
-    struct blacklist_item *tmp = NULL;
-    HASH_FIND_STR(black_list, inet_ntoa(ip->ip_src), tmp);
-    if (tmp != NULL) {
-        //if it is blacklisted sample no matters the sampling rate
+    if (sampler_info->use_blacklist == true){
+        //check if the address is blacklisted
+        struct blacklist_item *tmp = NULL;
+        HASH_FIND_STR(black_list, inet_ntoa(ip->ip_src), tmp);
+        if (tmp != NULL) {
+            //if it is blacklisted sample no matters the sampling rate
 //        printf("address %s is blacklisted\n", tmp->ip );
-        save_packet(sampler_info,header,packet);
-        return;
+            save_packet(sampler_info,header,packet);
+            return;
+        }
     }
 
     bool skip = ! (to_sample(sampler_info));
@@ -172,7 +173,6 @@ void my_packet_handler( u_char *args, const struct pcap_pkthdr *header, const u_
         return;
     }
 
-    //TODO predisporre il troncamento del pacchetto
 
 }
 
@@ -183,6 +183,7 @@ void usage(char *argv1){
                    "-n\t--no-truncate-pkts\t\tdo not truncate packets\n"
                    "-s\t--sample-n <N>\t\t\tsample 1 every N packets seen\n"
                    "-r\t\t\t\tuse dlt raw format\n"
+                   "-b\t\t\t\tuse blacklist to further analyze suspected sources\n"
                    "-N\t--no-sample\t\t\tdo not sample every N packets, take them all!\n"
                    "-h\t--help\t\t\tshow this help\n"
                    "\n" ,argv1);
@@ -199,8 +200,10 @@ void load_blacklist(){
 
     fp = fopen(blacklist_filename, "r");
     int id = 0;
-    if (fp == NULL)
+    if (fp == NULL) {
+        perror("no blacklist_file provided");
         exit(EXIT_FAILURE);
+    }
 
     while ((read = getline(&line, &len, fp)) != -1) {
         //reads all the lines and add them to the hashtable of blacklisted ip
@@ -208,20 +211,22 @@ void load_blacklist(){
             //strip the newline char
             (line)[read - 1] = '\0';
         }
-        struct blacklist_item *s;
+        if (strcmp(line, "") == 0 ){
 
+        }
+        struct blacklist_item *s;
         s = (struct blacklist_item*)malloc(sizeof(struct blacklist_item));
         s->id = id++;
         strncpy(s->ip, line, 256);
         HASH_ADD_STR(black_list, ip , s);
     }
 
-    struct blacklist_item *s = NULL;
+//    struct blacklist_item *s = NULL;
 
-    printf("Blacklisted IPs:\n");
-    for(s=black_list; s != NULL; s=s->hh.next) {
-        printf("id %d: ip %s\n", s->id, s->ip);
-    }
+//    printf("Blacklisted IPs:\n");
+//    for(s=black_list; s != NULL; s=s->hh.next) {
+//        printf("id %d: ip %s\n", s->id, s->ip);
+//    }
 
     fclose(fp);
 
@@ -245,6 +250,7 @@ int main(int argc, char **argv) {
     char in_filename[4096] = "";
     char out_filename[4096] = "";
     bool dlt_raw_ip = false;
+    bool use_blacklist = false;
 
     FILE *pid_fd = fopen("/tmp/pcap2sflow.pid", "w+");
     fprintf(pid_fd, "%d", getpid());
@@ -254,25 +260,19 @@ int main(int argc, char **argv) {
 /* Flag set by ‘--verbose’. */
 //    static int verbose_flag;
     static int raw_ip;
+    static int use_blist;
 
-    load_blacklist();
-
-    if (signal(SIGUSR1, reload_blacklist) == SIG_ERR)
-        printf("\ncan't catch SIGUSR1\n");
 
     int c;
 
     while (1) {
         static struct option long_options[] =
                 {
-                        /* These options set a flag. */
-//                        {"verbose", no_argument,       &verbose_flag, 1},
-                        /* These options don’t set a flag.
-                           We distinguish them by their indices. */
                         {"truncate-pkts",     required_argument,       0,             't'},
                         {"help",     no_argument,       0,             'h'},
                         {"sample-n",  required_argument, 0,             's'},
                         {"dlt-raw",  no_argument, &raw_ip,             'r'},
+                        {"blacklist",  no_argument, &use_blist,             'b'},
                         {"infile",    required_argument, 0,             'i'},
                         {"outfile",    required_argument, 0,             'o'},
                         {0, 0,                         0,             0}
@@ -280,7 +280,7 @@ int main(int argc, char **argv) {
         /* getopt_long stores the option index here. */
         int option_index = 0;
 
-        c = getopt_long(argc, argv, "t:s:i:o:hr",
+        c = getopt_long(argc, argv, "t:s:i:o:hrb",
                         long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -315,6 +315,10 @@ int main(int argc, char **argv) {
 //                printf("truncate to option -d with value `%s'\n", optarg);
                 truncate_bytes = atoi(optarg);
                 break;
+            case 'b':
+//                printf("truncate to option -d with value `%s'\n", optarg);
+                use_blacklist = true;
+                break;
             case 'r':
 //                printf("truncate to option -d with value `%s'\n", optarg);
                 dlt_raw_ip = true;
@@ -335,14 +339,6 @@ int main(int argc, char **argv) {
         }
     }
 
-
-    /* Instead of reporting ‘--verbose’
-       and ‘--brief’ as they are encountered,
-       we report the final status resulting from them. */
-//    if (verbose_flag)
-//        puts("verbose flag is set");
-
-
     //files are mandatory!!
     if ( strcmp("", in_filename) == 0 ) {
         usage(argv[0]);
@@ -353,18 +349,19 @@ int main(int argc, char **argv) {
         abort();
     }
 
-
-
     char error_buffer[PCAP_ERRBUF_SIZE];
     pcap_t *handle;
     const u_char *packet;
     struct pcap_pkthdr packet_header;
-//    int packet_count_limit = 1;
-//    int timeout_limit = 10000; /* In milliseconds */
 
+    if (use_blacklist == true) {
+        load_blacklist();
+        if (signal(SIGUSR1, reload_blacklist) == SIG_ERR)
+            printf("\ncan't catch SIGUSR1\n");
+    }
     handle = pcap_open_offline(in_filename, error_buffer);
 
-    cap_stat info = {0, sample_n, 0, 0, sample_n, NULL, truncate_bytes, dlt_raw_ip , DEFAULT_SLEEP_COUNTDOWN};
+    cap_stat info = {0, sample_n, 0, 0, sample_n, NULL, truncate_bytes, dlt_raw_ip , use_blacklist, DEFAULT_SLEEP_COUNTDOWN};
     select_random(&info);
 
     info.pdumper = pcap_dump_open(handle, out_filename);
