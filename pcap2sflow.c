@@ -9,9 +9,8 @@
 #include <getopt.h>
 #include <signal.h>
 #include <string.h>
-#include <dnet.h>
 #include "uthash.h"
-#include <pcap/pcap.h>
+#include <arpa/inet.h>
 #include <zconf.h>
 
 #define SIZE_ETHERNET 14
@@ -182,7 +181,7 @@ void my_packet_handler( u_char *args, const struct pcap_pkthdr *header, const u_
 }
 
 void usage(char *argv1){
-    printf("usage: %s --infile <input_file.pcap> --outfile <output_file.pcap>\n\n"
+    fprintf(stderr, "usage: %s --infile <input_file.pcap> --outfile <output_file.pcap>\n\n"
                    "options:\n"
                    "-t\t--trunkate-pkts <bytes>\t\ttruncate packet size to (bytes) size\n"
                    "-n\t--no-truncate-pkts\t\tdo not truncate packets\n"
@@ -226,12 +225,12 @@ void load_blacklist(){
         HASH_ADD_STR(black_list, ip , s);
     }
 
-//    struct blacklist_item *s = NULL;
+    struct blacklist_item *s = NULL;
 
-//    printf("Blacklisted IPs:\n");
-//    for(s=black_list; s != NULL; s=s->hh.next) {
-//        printf("id %d: ip %s\n", s->id, s->ip);
-//    }
+    fprintf(stderr, "Blacklisted IPs:\n");
+    for(s=black_list; s != NULL; s=s->hh.next) {
+        fprintf(stderr, "id %d: ip %s\n", s->id, s->ip);
+    }
 
     fclose(fp);
 
@@ -244,6 +243,13 @@ void reload_blacklist(int signo){
     HASH_CLEAR(hh, black_list);
     black_list = NULL;
     load_blacklist();
+    fprintf(stderr, "blacklist reloaded\n");
+    struct blacklist_item *s = NULL;
+
+    fprintf(stderr, "Blacklisted IPs:\n");
+    for(s=black_list; s != NULL; s=s->hh.next) {
+        fprintf(stderr, "id %d: ip %s\n", s->id, s->ip);
+    }
 
 }
 
@@ -362,7 +368,7 @@ int main(int argc, char **argv) {
     if (use_blacklist == true) {
         load_blacklist();
         if (signal(SIGUSR1, reload_blacklist) == SIG_ERR)
-            printf("\ncan't catch SIGUSR1\n");
+            fprintf(stderr, "\ncan't catch SIGUSR1\n");
     }
     handle = pcap_open_offline(in_filename, error_buffer);
 
