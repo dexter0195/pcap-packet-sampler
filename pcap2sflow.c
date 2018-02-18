@@ -134,7 +134,7 @@ void save_packet (cap_stat *s, const struct pcap_pkthdr *header, const u_char *p
 void my_packet_handler( u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
 
     cap_stat *sampler_info;
-    sampler_info = (cap_stat *) argsk;
+    sampler_info = (cap_stat *) args;
 
     if (sampler_info->sleeping_timeout-- == 0){
         const struct timespec timer = {
