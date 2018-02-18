@@ -17,7 +17,7 @@
 #define SIZE_ETHERNET 14
 #define ETHER_ADDR_LEN  6
 
-#define DEFAULT_SLEEP_COUNTDOWN 50
+#define DEFAULT_SLEEP_COUNTDOWN 100
 
 /*
  * Linux Socket Cooked Capture header - a pseudo header as DL substitute
@@ -134,12 +134,17 @@ void save_packet (cap_stat *s, const struct pcap_pkthdr *header, const u_char *p
 void my_packet_handler( u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
 
     cap_stat *sampler_info;
-    sampler_info = (cap_stat *) args;
+    sampler_info = (cap_stat *) argsk;
 
     if (sampler_info->sleeping_timeout-- == 0){
+        const struct timespec timer = {
+                .tv_sec = 0,
+                .tv_nsec = 5000000
+        };
+        struct timespec s;
 //        printf("simulating real traffic... sleeping\n");
         sampler_info->sleeping_timeout = DEFAULT_SLEEP_COUNTDOWN;
-        sleep(2);
+        nanosleep(&timer, &s);
     }
 
 
